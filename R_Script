@@ -1,0 +1,284 @@
+# Load libraries
+library(DESeq2)
+library(ggplot2)
+
+# Step 1: Load data
+counts <- read.csv("C:/Users/raghu/Downloads/counts1.csv", row.names = 1)
+metadata <- read.csv("C:/Users/raghu/Downloads/sample_metadata.csv", row.names = 1)
+
+# Ensure sample names match
+all(colnames(counts) == rownames(metadata))  # Should return TRUE
+
+# Step 2: Prepare DESeq2 object
+metadata$Resistance_Status <- factor(metadata$Resistance_Status)
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = metadata,
+                              design = ~ Resistance_Status)
+
+# Step 3: Prefilter low-count genes (optional but recommended)
+dds <- dds[rowSums(counts(dds)) >= 10, ]
+
+# Step 4: Run DESeq
+dds <- DESeq(dds)
+
+# Step 5: Get results with FDR < 0.05
+res <- results(dds, contrast = c("Resistance_Status", "Resistant", "Sensitive"))
+resOrdered <- res[order(res$padj), ]
+resSig <- resOrdered[which(resOrdered$padj < 0.05 & abs(resOrdered$log2FoldChange) >= 1), ]
+
+# Save to CSV
+write.csv(as.data.frame(resSig), file = "DEGs_DESeq2_logFC1_FDR05.csv")
+
+
+
+
+# Convert to data frame
+resSig_df <- as.data.frame(resSig)
+resSig_df$gene <- rownames(resSig_df)
+
+# Classify regulation
+resSig_df$regulation <- ifelse(resSig_df$log2FoldChange >= 1, "Upregulated", "Downregulated")
+
+# Save separately
+write.csv(resSig_df[resSig_df$regulation == "Upregulated", ],
+          "Upregulated_DEGs_DESeq2.csv", row.names = FALSE)
+
+write.csv(resSig_df[resSig_df$regulation == "Downregulated", ],
+          "Downregulated_DEGs_DESeq2.csv", row.names = FALSE)
+
+
+
+library(biomaRt)
+
+# Set up the Ensembl mart
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Query for gene annotations
+gene_annotations <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "description"),
+                          filters = "ensembl_gene_id",
+                          values = rownames(resSig_df),
+                          mart = mart)
+
+# View the gene annotations
+head(gene_annotations)
+
+# Check the row names of your DESeq2 results
+head(rownames(resSig_df))
+# Remove version numbers from Ensembl gene IDs (e.g., ENSG00000144355.15 -> ENSG00000144355)
+rownames(resSig_df) <- sub("\\..*", "", rownames(resSig_df))
+
+# Check the first few gene IDs after removing versions
+head(rownames(resSig_df))
+
+# Query Ensembl for gene annotations (gene symbols and descriptions)
+gene_annotations <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "description"),
+                          filters = "ensembl_gene_id",
+                          values = rownames(resSig_df),
+                          mart = mart)
+
+# Check the first few rows of the gene annotations
+head(gene_annotations)
+
+# Merge DESeq2 results with gene annotations
+resSig_df <- merge(resSig_df, gene_annotations, by.x = "gene", by.y = "ensembl_gene_id", all.x = TRUE)
+
+# Check the first few rows of the merged data
+head(resSig_df)
+
+
+# Remove version numbers from the gene column in resSig_df (e.g., ENSG00000004848.8 -> ENSG00000004848)
+resSig_df$gene <- sub("\\..*", "", resSig_df$gene)
+
+# Check the first few rows to confirm
+head(resSig_df$gene)
+
+
+
+# Merge DESeq2 results with gene annotations again
+resSig_df <- merge(resSig_df, gene_annotations, by.x = "gene", by.y = "ensembl_gene_id", all.x = TRUE)
+
+# Check the merged data
+head(resSig_df)
+
+
+# Keep the relevant columns from gene_annotations and remove the .x columns
+resSig_df <- resSig_df[, c("gene", "baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj", "regulation", "external_gene_name.y", "description.y")]
+
+# Rename the annotation columns for clarity
+colnames(resSig_df)[which(colnames(resSig_df) == "external_gene_name.y")] <- "external_gene_name"
+colnames(resSig_df)[which(colnames(resSig_df) == "description.y")] <- "description"
+
+# Check the first few rows of the cleaned-up data
+head(resSig_df)
+
+
+
+
+# Save the cleaned results with annotations for all genes
+write.csv(resSig_df, "DEGs_with_Annotations_Cleaned.csv", row.names = FALSE)
+
+# Save results for Upregulated genes with annotations
+write.csv(resSig_df[resSig_df$regulation == "Upregulated", ],
+          "Upregulated_DEGs_with_Annotations_Cleaned.csv", row.names = FALSE)
+
+# Save results for Downregulated genes with annotations
+write.csv(resSig_df[resSig_df$regulation == "Downregulated", ],
+          "Downregulated_DEGs_with_Annotations_Cleaned.csv", row.names = FALSE)
+
+
+
+
+vsd <- vst(dds, blind = FALSE)
+pcaData <- plotPCA(vsd, intgroup = "Resistance_Status", returnData = TRUE)
+ggplot(pcaData, aes(PC1, PC2, color = Resistance_Status)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(title = "PCA - DESeq2")
+
+
+res_df <- as.data.frame(res)
+res_df$gene <- rownames(res_df)
+res_df$significance <- ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) >= 1,
+                              "Significant", "Not Sig")
+
+ggplot(res_df, aes(log2FoldChange, -log10(padj), color = significance)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("red", "grey")) +
+  theme_minimal() +
+  labs(title = "Volcano Plot - DESeq2",
+       x = "log2 Fold Change", y = "-log10 FDR")
+
+
+
+
+
+---
+  
+  ### ✅ **What to Add for Enhanced Volcano Plot**:
+  
+  To **label top genes**, improve coloring, and show thresholds:
+  
+  ```r
+library(ggrepel)
+
+# Define cutoff lines and gene labels
+res_df$label <- ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) >= 2,
+                       rownames(res_df), NA)
+
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj), color = significance)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  scale_color_manual(values = c("Significant" = "red", "Not Sig" = "grey")) +
+  geom_text_repel(aes(label = label), size = 3, max.overlaps = 10) +
+  theme_minimal() +
+  labs(title = "Volcano Plot - DESeq2", x = "log2 Fold Change", y = "-log10 FDR")
+
+
+
+# Convert results to data frame
+res_df <- as.data.frame(res)
+res_df$Gene <- rownames(res_df)
+
+# Remove NAs
+res_df <- na.omit(res_df)
+
+# Load ggplot2 if not already loaded
+library(ggplot2)
+
+# Volcano plot with gradient color
+ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue), color = log2FoldChange)) +
+  geom_point(alpha = 0.8, size = 1.2) +
+  scale_color_gradient2(low = "purple", mid = "white", high = "orange", midpoint = 0) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Volcano Plot - DESeq2",
+    x = "log2 Fold Change",
+    y = "-log10(P-value)",
+    color = "log2FC"
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("volcano_plot_DESeq2.png", width = 8, height = 6, dpi = 300)
+
+
+# Save significant DEGs to CSV
+write.csv(as.data.frame(resSig), file = "DEGs_DESeq2_filtered.csv")
+
+
+# Remove version numbers from the gene column in resSig_df (e.g., ENSG00000004848.8 -> ENSG00000004848)
+resSig_df$gene <- sub("\\..*", "", resSig_df$gene)
+
+# Check the first few rows to confirm
+head(resSig_df$gene)
+
+
+
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(ensembldb)
+
+# Extract Ensembl IDs (from rownames)
+ensembl_ids <- rownames(res_df)
+
+# Convert Ensembl IDs to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db, keys = ensembl_ids, column = "SYMBOL", keytype = "ENSEMBL")
+
+# Get annotation (e.g., Entrez ID, description)
+annot <- AnnotationDbi::select(org.Hs.eg.db,
+                               keys = gene_symbols,
+                               columns = c("SYMBOL", "GENENAME", "ENTREZID"),
+                               keytype = "SYMBOL")
+
+# Merge with res_df
+annotated_res <- merge(res_df, annot, by.x = "Gene", by.y = "SYMBOL", all.x = TRUE)
+
+# Save annotated results
+write.csv(annotated_res, "DEGs_annotated.csv", row.names = FALSE)
+
+
+
+
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(ensembldb)
+
+# Extract Ensembl IDs (from rownames), removing the version number
+ensembl_ids <- sub("\\..*", "", rownames(res_df))
+
+# Convert Ensembl IDs to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db, keys = ensembl_ids, column = "SYMBOL", keytype = "ENSEMBL")
+
+# Get annotation (e.g., Entrez ID, description)
+annot <- AnnotationDbi::select(org.Hs.eg.db,
+                               keys = gene_symbols,
+                               columns = c("SYMBOL", "GENENAME", "ENTREZID"),
+                               keytype = "SYMBOL")
+
+# Merge with res_df
+annotated_res <- merge(res_df, annot, by.x = "Gene", by.y = "SYMBOL", all.x = TRUE)
+
+# Save annotated results
+write.csv(annotated_res, "DEGs_annotated.csv", row.names = FALSE)
+
+
+# Install and load biomaRt package
+install.packages("biomaRt")
+library(biomaRt)
+
+# Set up the Ensembl Mart for human data
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Extract Ensembl IDs (remove version)
+ensembl_ids <- sub("\\..*", "", rownames(res_df))
+
+# Query the Mart to get the gene symbols corresponding to Ensembl IDs
+gene_info <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"),
+                   filters = "ensembl_gene_id",
+                   values = ensembl_ids,
+                   mart = ensembl)
+
+# Merge the gene symbols with your results data frame
+annotated_res <- merge(res_df, gene_info, by.x = "Gene", by.y = "ensembl_gene_id", all.x = TRUE)
+
+# Save annotated results
+write.csv(annotated_res, "DEGs_annotated223.csv", row.names = FALSE)
